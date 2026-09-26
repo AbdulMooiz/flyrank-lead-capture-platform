@@ -1,12 +1,16 @@
-from pathlib import Path
-
 from fastapi.testclient import TestClient
+import httpx
+import pytest
+from rq import Retry
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 import app.main as main
+from app.core.config import settings
 from app.db import session as db_session
 from app.db.models import Base
+from app.integrations.geo import GeoEnricher
+from app.services import jobs, rate_limit
 
 
 def create_client(tmp_path):
@@ -127,3 +131,154 @@ def test_public_submission_and_dashboard_analytics(tmp_path):
     submissions = client.get("/api/dashboard/submissions", headers=headers)
     assert submissions.status_code == 200, submissions.text
     assert submissions.json()["total"] >= 1
+
+
+def test_public_widget_config_and_cors_preflight(tmp_path):
+    client = create_client(tmp_path)
+    token = register(client, email="public@example.com", password="Pass1234!", tenant_name="Public")
+    headers = {"Authorization": f"Bearer {token}"}
+    widget = client.post(
+        "/api/widgets",
+        json={
+            "type": "signup",
+            "title": "Lead magnet",
+            "description": "Sign up for updates",
+            "fields": [{"name": "email", "label": "Email", "type": "email", "required": True}],
+            "button_text": "Join",
+        },
+        headers=headers,
+    )
+    widget_id = widget.json()["id"]
+
+    config = client.get(f"/api/widgets/{widget_id}/config")
+    assert config.status_code == 200, config.text
+    assert config.headers.get("cache-control", "").startswith("public")
+
+    preflight = client.options(
+        "/api/submissions",
+        headers={
+            "Origin": "http://localhost:5500",
+            "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": "Content-Type, Idempotency-Key",
+        },
+    )
+    assert preflight.status_code == 200, preflight.text
+    assert preflight.headers.get("access-control-allow-origin") == "http://localhost:5500"
+
+
+def test_oversized_payload_and_rate_limit(tmp_path):
+    rate_limit._memory.clear()
+    original_limit = settings.rate_limit_requests
+    settings.rate_limit_requests = 2
+    try:
+        client = create_client(tmp_path)
+        token = register(client, email="burst@example.com", password="Pass1234!", tenant_name="Burst")
+        headers = {"Authorization": f"Bearer {token}"}
+        widget = client.post(
+            "/api/widgets",
+            json={
+                "type": "contact",
+                "title": "Fast form",
+                "description": "Test burst handling",
+                "fields": [{"name": "message", "label": "Message", "type": "text", "required": True}],
+                "button_text": "Send",
+            },
+            headers=headers,
+        )
+        widget_id = widget.json()["id"]
+
+        too_big = client.post(
+            "/api/submissions",
+            json={"widget_id": widget_id, "data": {"message": "x" * 50000}, "honeypot": ""},
+        )
+        assert too_big.status_code == 413, too_big.text
+
+        first = client.post(
+            "/api/submissions",
+            json={"widget_id": widget_id, "data": {"message": "first valid request"}, "honeypot": ""},
+            headers={"Idempotency-Key": "rate-1"},
+        )
+        assert first.status_code == 201, first.text
+
+        second = client.post(
+            "/api/submissions",
+            json={"widget_id": widget_id, "data": {"message": "second valid request"}, "honeypot": ""},
+            headers={"Idempotency-Key": "rate-2"},
+        )
+        assert second.status_code == 201, second.text
+
+        blocked = client.post(
+            "/api/submissions",
+            json={"widget_id": widget_id, "data": {"message": "third valid request"}, "honeypot": ""},
+            headers={"Idempotency-Key": "rate-3"},
+        )
+        assert blocked.status_code == 429, blocked.text
+    finally:
+        settings.rate_limit_requests = original_limit
+
+
+def test_enqueue_notification_sets_retry_policy(monkeypatch):
+    captured = {}
+
+    class DummyQueue:
+        def enqueue(self, func_name, submission_id, retry=None, **kwargs):
+            captured["func_name"] = func_name
+            captured["submission_id"] = submission_id
+            captured["retry"] = retry
+            return object()
+
+    class DummyRedis:
+        @staticmethod
+        def from_url(*args, **kwargs):
+            return DummyRedis()
+
+    monkeypatch.setattr(jobs, "Queue", lambda *args, **kwargs: DummyQueue())
+    monkeypatch.setattr(jobs, "Redis", DummyRedis)
+
+    jobs.enqueue_notification("submission-123")
+
+    assert captured["func_name"] == "app.workers.worker.process_notification"
+    assert captured["submission_id"] == "submission-123"
+    assert isinstance(captured["retry"], Retry)
+    assert captured["retry"].max == 3
+
+
+@pytest.mark.asyncio
+async def test_geo_enricher_uses_second_provider_when_first_fails():
+    class FakeResponse:
+        def __init__(self, payload):
+            self.payload = payload
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return self.payload
+
+    class FakeClient:
+        def __init__(self):
+            self.urls = []
+
+        async def get(self, url):
+            self.urls.append(url)
+            if "ip-api.com" in url:
+                raise httpx.ConnectError("primary unavailable")
+            return FakeResponse({"country_name": "Canada", "country_code": "CA", "city": "Toronto", "region": "Ontario"})
+
+    client = FakeClient()
+    result = await GeoEnricher(client).enrich("203.0.113.10")
+
+    assert result["geo_provider"] == "ipapi.co"
+    assert result["country_code"] == "CA"
+    assert len(client.urls) == 2
+
+
+@pytest.mark.asyncio
+async def test_geo_enricher_degrades_when_all_providers_fail():
+    class FakeClient:
+        async def get(self, url):
+            raise httpx.ConnectError("provider unavailable")
+
+    result = await GeoEnricher(FakeClient()).enrich("203.0.113.11")
+
+    assert result == {}

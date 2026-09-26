@@ -19,7 +19,15 @@
 - The app baseline is passing for the core auth, widget, tenant-isolation, config, submission, analytics, oversized-payload, and rate-limit checks captured in the regression suite.
 - The repository now includes real evidence in `EVIDENCE.md` and project usage notes in `README.md`.
 
+### Continued implementation and runtime verification
+
+- Added an explicit RQ retry policy with three attempts and increasing intervals for notification jobs.
+- Added regression coverage for queue retry configuration, geo-provider fallback, and graceful geo degradation.
+- Built and started the complete Docker Compose stack successfully.
+- Verified API health, demo delivery, database and Redis health, Alembic startup, worker startup, and a live registration/widget/submission flow.
+- Confirmed the worker completed the live notification job successfully.
+
 ### Known limitations
 
-- Full end-to-end Docker runtime verification beyond compose config validation was not yet executed in this environment.
-- Advanced geo-provider fallback, background retry edge cases, and broader security acceptance tests remain outside the current verified baseline unless they are specifically added and executed later.
+- Live failure-and-retry timing for a deliberately failed notification was not exercised; the retry policy is covered by a focused unit regression.
+- Broader security acceptance tests remain outside the current verified baseline.
