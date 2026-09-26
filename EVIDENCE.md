@@ -17,10 +17,8 @@ Observed result:
 
 - branch: `main`
 - remote: `https://github.com/AbdulMooiz/flyrank-lead-capture-platform.git`
-- last commits:
-  - `5559bfd build architecture for running smoothly`
-  - `dd9de2e chore: bootstrap capstone service foundation`
-- local follow-up changes: queue retry policy, regression coverage, and geo fallback coverage
+- last commit: `3c1d1b5 RQ retry policy: 3 attempts with intervals [1, 5, 15] Geo-provider fallback and graceful degradation tests Updated EVIDENCE.md and BUILDLOG.md Verified full Docker Compose runtime Verified live registration → widget creation → submission → worker processing`
+- branch state: clean and synchronized with `origin/main` at the last checkpoint
 
 ## 2) Docker Compose configuration validation
 
@@ -58,6 +56,7 @@ Verified behaviors:
 - rate limiting triggers once the configured threshold is exceeded
 - dashboard analytics and submissions endpoint return expected data
 - notification enqueue uses an RQ retry policy with three attempts
+- the worker starts with the RQ scheduler enabled for delayed retries
 - geo enrichment falls back from `ip-api.com` to `ipapi.co`
 - geo enrichment returns an empty result when both providers fail
 
@@ -94,7 +93,8 @@ Observed result:
 - worker started and listened on the `notifications` queue
 - live registration returned `201`, widget creation succeeded, and a public submission returned `status=received`
 - worker logged successful completion of `app.workers.worker.process_notification`
+- a deliberate failure was retried three times and persisted as `status=failed`, `attempts=3`
 
 ## 6) Current status
 
-The repository is ready for the final commit and push, with automated and live Docker evidence recorded for the behaviors above.
+The repository is ready for the next commit and push, with automated and live Docker evidence recorded for the behaviors above.

@@ -40,7 +40,7 @@ def process_notification(submission_id: str) -> None:
 def main() -> None:
     redis = Redis.from_url(settings.redis_url)
     worker = Worker([Queue("notifications", connection=redis)], connection=redis)
-    worker.work()
+    worker.work(with_scheduler=True)
 
 
 if __name__ == "__main__":

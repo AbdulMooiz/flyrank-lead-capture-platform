@@ -11,6 +11,7 @@ from app.db import session as db_session
 from app.db.models import Base
 from app.integrations.geo import GeoEnricher
 from app.services import jobs, rate_limit
+from app.workers import worker as worker_module
 
 
 def create_client(tmp_path):
@@ -241,6 +242,30 @@ def test_enqueue_notification_sets_retry_policy(monkeypatch):
     assert captured["submission_id"] == "submission-123"
     assert isinstance(captured["retry"], Retry)
     assert captured["retry"].max == 3
+
+
+def test_worker_starts_with_scheduler(monkeypatch):
+    captured = {}
+
+    class DummyRedis:
+        @staticmethod
+        def from_url(*args, **kwargs):
+            return object()
+
+    class DummyWorker:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def work(self, **kwargs):
+            captured.update(kwargs)
+
+    monkeypatch.setattr(worker_module, "Redis", DummyRedis)
+    monkeypatch.setattr(worker_module, "Queue", lambda *args, **kwargs: object())
+    monkeypatch.setattr(worker_module, "Worker", DummyWorker)
+
+    worker_module.main()
+
+    assert captured == {"with_scheduler": True}
 
 
 @pytest.mark.asyncio
