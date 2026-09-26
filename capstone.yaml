@@ -1,0 +1,13 @@
+run: docker compose up --build
+seed: docker compose exec api python scripts/seed.py
+test: docker compose run --rm api pytest -q
+base_url: http://localhost:8000
+endpoints:
+  health: /health
+  swagger: /docs
+  register: /api/auth/register
+  login: /api/auth/login
+  widgets: /api/widgets
+  widget_config: /api/widgets/{widget_id}/config
+  submissions: /api/submissions
+  analytics: /api/dashboard/analytics
